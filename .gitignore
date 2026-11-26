@@ -1,0 +1,61 @@
+# ===== Not part of NochMal / 德词轮刷 =====
+notes/
+.cursor/
+运行日志/
+baseline/
+不规则动词/
+德语*.md
+
+# Secrets / API keys (never commit)
+**/image_api_keys.json
+**/keys.json
+**/keys.local.json
+**/.env
+**/.env.*
+!**/.env.example
+!**/image_api_keys.example.json
+
+# Android / Gradle
+**/build/
+**/.gradle/
+**/local.properties
+**/*.apk
+**/*.aab
+**/*.ap_
+**/*.dex
+**/.cxx/
+**/captures/
+
+# Pack builder caches & intermediates
+**/_*/
+**/*_work/
+**/_apkg_extract/
+**/_deck.zip
+**/*.apkg
+
+# Large binaries (only via GitHub Releases, not git history)
+release/**/*.deword
+release/**/*.apk
+**/*.deword
+
+# Huge generated query dumps / benches (optional local only)
+**/image_search_queries_all.json
+**/image_search_queries_demo20.json
+**/image_source_bench.json
+**/_bench_images/
+**/_test_*.jpg
+**/preview_detail_buttons.html
+
+# OS / IDE
+.DS_Store
+Thumbs.db
+.idea/
+*.iml
+.vscode/
+*.log
+
+# Python
+**/__pycache__/
+*.pyc
+.venv/
+venv/
