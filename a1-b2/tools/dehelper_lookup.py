@@ -19,6 +19,20 @@ VERB_POS = {"verb", "v", "vt", "vi"}
 ADJ_POS = {"adj", "adjektiv"}
 ADV_POS = {"adv", "adverb"}
 
+# Compound / noise prefixes before a false "Motor" head (Doppel-V-Motor, Acro-Motor…)
+_BAD_PREV = set(b"-/_.\\:+#@")
+
+# Gloss that looks like a real dictionary sense, not a product/city fragment.
+_STYLED_GLOSS = re.compile(
+    r"^(?:(?:refl\.|unpers\.)\s*)?(?:[mnfMNF]\.|pl\.|Vt\.|Vi\.|vt\.|vi\.|"
+    r"Adj\.|adj\.|Adv\.|adv\.|Präp\.|Konj\.|Pron\.|Art\.|Num\.)"
+)
+_PLACE_JUNK = re.compile(
+    r"(市|省|有限公司|股份有限|集团有限|电机厂|电话|网址|https?://|www\.|@.+\.)",
+    re.I,
+)
+_LATIN_HEAVY = re.compile(r"[A-Za-z]{4,}")
+
 
 def clean_lemma(lemma: str) -> str:
     s = (lemma or "").strip()
@@ -47,9 +61,13 @@ def detect_want(lemma: str, pos: str) -> str:
 
 def gloss_kind(g: str) -> str:
     g = g.strip()
+    g = re.sub(r"^(?:refl\.|unpers\.)\s*", "", g, flags=re.I)
     if re.match(r"^(?:[mnfMNF]\.|pl\.)", g):
         return "noun"
     if re.match(r"^(?:Vt\.|Vi\.|vt\.|vi\.)", g):
+        return "verb"
+    # "refl. vi. vt. …" after stripping refl still may start with vi/vt
+    if re.match(r"^(?:vi\.|vt\.|Vi\.|Vt\.)(?:\s+(?:vi\.|vt\.|Vi\.|Vt\.))*", g):
         return "verb"
     if re.match(r"^(?:Adj\.|adj\.)", g):
         return "adj"
@@ -63,28 +81,67 @@ def gloss_kind(g: str) -> str:
 def short_zh(g: str) -> str:
     """Strip dictionary POS prefix for quiz button text."""
     s = re.sub(
-        r"^(?:[mnfMNF]\.|Vt\.|Vi\.|Adj\.|Adv\.|adj\.|adv\.|Präp\.|Konj\.|Pron\.|Art\.|pl\.)\s*",
+        r"^(?:(?:refl\.|unpers\.)\s*)?(?:[mnfMNF]\.|Vt\.|Vi\.|vt\.|vi\.|Adj\.|Adv\.|adj\.|adv\.|"
+        r"Präp\.|Konj\.|Pron\.|Art\.|pl\.)(?:\s+(?:Vt\.|Vi\.|vt\.|vi\.))*\s*",
         "",
         g.strip(),
+        flags=re.I,
     )
-    # keep first sense chunk
     s = re.split(r"[;；]", s)[0].strip()
     s = re.sub(r"\s+", "", s)
-    # trim overly long
     if len(s) > 24:
         s = s[:24]
     return s
 
 
-def _extract_near(data: bytes, pos: int, head: str) -> dict | None:
-    start = pos + len(head.encode("utf-8"))
-    if start >= len(data) or data[start] != 0:
-        return None
-    # Keep window moderate: enough for long adj glosses, stop at first CJK field.
-    window = data[start + 1 : start + 1 + 280]
-    parts = window.split(b"\x00")
-    candidates: list[str] = []
-    for p in parts[:8]:
+def _is_head_boundary(data: bytes, i: int) -> bool:
+    """True if data[i] starts an independent headword, not a compound tail."""
+    if i < 0:
+        return False
+    prev = data[i - 1] if i > 0 else 0
+    # mid-latin word
+    if (65 <= prev <= 90) or (97 <= prev <= 122):
+        return False
+    # mid UTF-8 of longer German word
+    if prev >= 0x80:
+        return False
+    # compound joiners: Doppel-V-Motor, Acro/Motor, foo_Motor
+    if prev in _BAD_PREV:
+        return False
+    # digit-compound tails (2Motor) rare but reject
+    if 48 <= prev <= 57:
+        return False
+    return True
+
+
+def _gloss_quality(gloss: str) -> int:
+    """Higher = likelier a real dictionary sense."""
+    g = (gloss or "").strip()
+    if not g:
+        return -10
+    score = 0
+    if _STYLED_GLOSS.match(g):
+        score += 6
+    if _PLACE_JUNK.search(g):
+        score -= 8
+    # Broken fragments like 的DraI燃料发动机
+    if re.match(r"^[的地得]", g) and _LATIN_HEAVY.search(g):
+        score -= 6
+    latin = len(_LATIN_HEAVY.findall(g))
+    cjk = len(re.findall(r"[\u4e00-\u9fff]", g))
+    if latin >= 2 and cjk <= 6:
+        score -= 4
+    if cjk >= 2:
+        score += 1
+    if cjk >= 4:
+        score += 1
+    return score
+
+
+def _pick_gloss(parts: list[bytes]) -> str | None:
+    """Prefer styled POS gloss among nearby null-separated fields."""
+    decoded: list[str] = []
+    for p in parts[:10]:
         if not p or len(p) > 400:
             continue
         try:
@@ -94,16 +151,35 @@ def _extract_near(data: bytes, pos: int, head: str) -> dict | None:
         s = s.strip()
         if not re.search(r"[\u4e00-\u9fff]", s) or s.startswith("<"):
             continue
-        candidates.append(s)
-    if not candidates:
+        decoded.append(s)
+    if not decoded:
         return None
-    # Nearest gloss after headword wins (order in parts == proximity).
-    gloss = candidates[0]
+    # Prefer m./Vt./Adj. style over bare plain junk
+    ranked = sorted(decoded, key=_gloss_quality, reverse=True)
+    best = ranked[0]
+    if _gloss_quality(best) < 0 and not _STYLED_GLOSS.match(best):
+        # still return nearest if everything looks bad — caller may filter
+        return decoded[0]
+    return best
+
+
+def _extract_near(data: bytes, pos: int, head: str) -> dict | None:
+    start = pos + len(head.encode("utf-8"))
+    if start >= len(data) or data[start] != 0:
+        return None
+    window = data[start + 1 : start + 1 + 320]
+    parts = window.split(b"\x00")
+    gloss = _pick_gloss(parts)
+    if not gloss:
+        return None
     text = window.decode("utf-8", "replace")
     pos_tag = ""
     pm = re.search(r"<pos>([^<]+)</pos>", text)
     if pm:
         pos_tag = pm.group(1).strip()
+    # Headword entry often has <pl>Motor…</pl><pos>m.</pos> right after
+    has_pl = bool(re.search(rf"<pl>\s*{re.escape(head)}", text, flags=re.I))
+    has_pos_xml = bool(pos_tag)
     return {
         "lemma": head,
         "def_zh": gloss,
@@ -112,6 +188,9 @@ def _extract_near(data: bytes, pos: int, head: str) -> dict | None:
         "kind": gloss_kind(gloss),
         "offset": pos,
         "case_exact": True,
+        "has_pl": has_pl,
+        "has_pos_xml": has_pos_xml,
+        "q": _gloss_quality(gloss),
     }
 
 
@@ -127,7 +206,6 @@ def lookup(
         return []
     want = detect_want(word, pos)
 
-    # Prefer exact-case head first for nouns (Rücken vs rücken)
     variants: list[bytes] = []
     for v in (
         head.encode("utf-8"),
@@ -140,29 +218,30 @@ def lookup(
 
     hits: list[dict] = []
     seen_off: set[int] = set()
+    # Scan more candidates so true head (often later in file) is not missed.
+    per_variant_cap = 64
     for var in variants:
         start = 0
         found_here = 0
-        while found_here < 8:
+        while found_here < per_variant_cap:
             i = data.find(var, start)
             if i < 0:
                 break
             start = i + 1
-            prev = data[i - 1] if i > 0 else 0
             end = i + len(var)
             if end >= len(data) or data[end] != 0:
                 continue
-            # previous must not continue a longer latin/utf8 word
-            if (65 <= prev <= 90) or (97 <= prev <= 122):
-                continue
-            if prev >= 0x80:
-                # likely mid UTF-8 sequence of longer German word
+            if not _is_head_boundary(data, i):
                 continue
             if i in seen_off:
                 continue
             seen_off.add(i)
             got = _extract_near(data, i, var.decode("utf-8"))
             if not got:
+                continue
+            # Drop obvious junk unless nothing else (filtered later by score)
+            # Only drop clear junk (place/company noise); keep weak-but-real glosses.
+            if got["q"] <= -7 and not got.get("has_pl") and got["kind"] == "plain":
                 continue
             got["case_exact"] = var.decode("utf-8") == head or (
                 want == "noun" and var.decode("utf-8") == (head[:1].upper() + head[1:])
@@ -176,27 +255,42 @@ def lookup(
         if want == "any":
             kind_match = 1
         elif want == kind:
-            kind_match = 4
+            kind_match = 5
         elif want == "noun" and kind == "plain":
-            kind_match = 2
+            kind_match = 1
         elif want == "verb" and kind == "plain":
-            kind_match = 2
+            kind_match = 1
         elif want == "adj" and kind == "plain":
-            kind_match = 2
+            kind_match = 1
         elif want == "noun" and kind == "verb":
-            kind_match = 0
+            kind_match = -2
         elif want == "verb" and kind == "noun":
-            kind_match = 0
-        styled = 1 if kind != "plain" else 0
-        # Exact orthography matters a lot (Rücken vs rücken)
+            kind_match = -2
+
+        styled = 2 if kind != "plain" else 0
         case_sc = 2 if h.get("case_exact") else 0
         if want == "noun" and h["lemma"][:1].isupper():
             case_sc += 1
         if want == "verb" and h["lemma"][:1].islower():
             case_sc += 1
+
+        struct = 0
+        if h.get("has_pl"):
+            struct += 4
+        if h.get("has_pos_xml"):
+            struct += 2
+        # XML pos agreeing with want
+        xml = (h.get("pos_tag") or "").lower()
+        if want == "noun" and xml in {"m.", "f.", "n.", "m", "f", "n"}:
+            struct += 3
+        if want == "verb" and "v" in xml:
+            struct += 3
+        if want == "adj" and "adj" in xml:
+            struct += 3
+
+        q = int(h.get("q") or 0)
         cjk = len(re.findall(r"[\u4e00-\u9fff]", h["def_zh"]))
-        junk = 0 if cjk >= 1 else -5
-        return (kind_match, case_sc, styled, cjk, junk)
+        return (kind_match, struct, styled, q, case_sc, cjk)
 
     hits.sort(key=score, reverse=True)
     uniq = []

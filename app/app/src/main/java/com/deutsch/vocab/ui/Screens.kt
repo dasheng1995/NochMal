@@ -42,6 +42,7 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.automirrored.filled.VolumeUp
 import androidx.compose.material.icons.filled.Bolt
+import androidx.compose.material.icons.filled.Clear
 import androidx.compose.material.icons.filled.UploadFile
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
@@ -162,10 +163,25 @@ fun DeckListScreen(
         return
     }
 
+    val searching = homeQuery.isNotBlank()
+    if (searching) {
+        BackHandler { homeQuery = "" }
+    }
+
     Scaffold(
         topBar = {
             TopAppBar(
                 title = { Text("德词轮刷") },
+                navigationIcon = {
+                    if (searching) {
+                        IconButton(onClick = { homeQuery = "" }) {
+                            Icon(
+                                Icons.AutoMirrored.Filled.ArrowBack,
+                                contentDescription = "退出搜索"
+                            )
+                        }
+                    }
+                },
                 actions = {
                     IconButton(onClick = {
                         picker.launch(arrayOf("application/zip", "application/octet-stream", "*/*"))
@@ -189,7 +205,14 @@ fun DeckListScreen(
                 modifier = Modifier.fillMaxWidth(),
                 singleLine = true,
                 placeholder = { Text("搜索全部已安装词库…") },
-                shape = RoundedCornerShape(12.dp)
+                shape = RoundedCornerShape(12.dp),
+                trailingIcon = {
+                    if (homeQuery.isNotEmpty()) {
+                        IconButton(onClick = { homeQuery = "" }) {
+                            Icon(Icons.Default.Clear, contentDescription = "清空搜索")
+                        }
+                    }
+                }
             )
             Spacer(Modifier.height(8.dp))
             if (homeQuery.isNotBlank()) {
@@ -693,6 +716,7 @@ fun QuizScreen(
                 word = session.word,
                 imageFile = session.imageFile,
                 autoPlayToken = vm.detailOpenToken,
+                progressFraction = vm.progressFraction,
                 onPlayWord = { vm.playWordAudio() },
                 onPlaySentence = { vm.playSentenceAudio() },
                 onEasy = { vm.markEasy() },
@@ -1178,7 +1202,8 @@ fun WordDetailScreen(
     continueLabel: String = "继续",
     autoPlay: Boolean = true,
     isEasy: Boolean = false,
-    onUnchop: (() -> Unit)? = null
+    onUnchop: (() -> Unit)? = null,
+    progressFraction: Float? = null
 ) {
     LaunchedEffect(autoPlayToken, word.id) {
         if (autoPlay) onPlaySentence()
@@ -1203,7 +1228,20 @@ fun WordDetailScreen(
                 .fillMaxSize()
                 .verticalScroll(rememberScrollState())
         ) {
-            Spacer(Modifier.height(8.dp))
+            if (progressFraction != null) {
+                Spacer(Modifier.height(8.dp))
+                LinearProgressIndicator(
+                    progress = { progressFraction },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(6.dp)
+                        .clip(RoundedCornerShape(6.dp)),
+                    color = Accent
+                )
+                Spacer(Modifier.height(8.dp))
+            } else {
+                Spacer(Modifier.height(8.dp))
+            }
             val lemmaStyle = remember(word.lemma) { detailLemmaStyle(word.lemma) }
             SelectionContainer {
                 Text(

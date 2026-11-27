@@ -1,12 +1,17 @@
 package com.deutsch.vocab.ui
 
 import android.app.Application
+import android.media.AudioManager
 import android.media.MediaPlayer
+import android.media.ToneGenerator
+import android.os.Handler
+import android.os.Looper
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.lifecycle.AndroidViewModel
+import com.deutsch.vocab.R
 import com.deutsch.vocab.data.PackRepository
 import com.deutsch.vocab.data.Word
 import com.deutsch.vocab.data.WordStatus
@@ -39,6 +44,8 @@ data class DetailSession(
 class QuizViewModel(app: Application) : AndroidViewModel(app) {
     private val repo = PackRepository(app)
     private var player: MediaPlayer? = null
+    private var sfxPlayer: MediaPlayer? = null
+    private val mainHandler = Handler(Looper.getMainLooper())
 
     var level by mutableStateOf("A1")
         private set
@@ -64,15 +71,36 @@ class QuizViewModel(app: Application) : AndroidViewModel(app) {
     var detailOpenToken by mutableIntStateOf(0)
         private set
 
+    /**
+     * Deck total progress: (total - unseen) / total.
+     * Denominator = full deck size including 斩. 斩 is never 未看过, so it always
+     * counts as already done (as if seen every round).
+     */
     val progressFraction: Float
-        get() = if (queue.isEmpty()) 0f else index.toFloat() / queue.size.toFloat()
+        get() {
+            val words = repo.loadWords(level)
+            val total = words.size
+            if (total == 0) return 0f
+            val progress = repo.loadAllProgress(level)
+            // 未看过 only; Easy / Learning / Unknown all count toward done.
+            val unseen = words.count { w ->
+                (progress[w.id]?.status ?: WordStatus.UNSEEN) == WordStatus.UNSEEN
+            }
+            return ((total - unseen).toFloat() / total.toFloat()).coerceIn(0f, 1f)
+        }
 
     fun start(level: String) {
         this.level = level
+        val words = repo.loadWords(level)
         val progress = repo.loadAllProgress(level)
-        queue = repo.loadWords(level)
-            .filter { progress[it.id]?.status != WordStatus.EASY }
-            .shuffled()
+        // Same round: only queue words not yet passed this round (passCount < currentRound).
+        // Restarting mid-round must not re-include 学习中 / 不会 that already got a pass.
+        val round = repo.currentRound(words, progress)
+        queue = words.filter { w ->
+            val p = progress[w.id]
+            (p?.status ?: WordStatus.UNSEEN) != WordStatus.EASY &&
+                (p?.passCount ?: 0) < round
+        }.shuffled()
         index = 0
         finished = false
         previousSummary = ""
@@ -121,6 +149,7 @@ class QuizViewModel(app: Application) : AndroidViewModel(app) {
         val q = question ?: return
         if (i in wrongIndices) return
         if (i == q.correctIndex) {
+            playAnswerSfx(correct = true)
             // Once wrong (≥1), stay in 不会 even after a later correct answer.
             val wrongThisTurn = wrongIndices.isNotEmpty()
             repo.updateProgress(level, q.word.id) { p ->
@@ -133,10 +162,35 @@ class QuizViewModel(app: Application) : AndroidViewModel(app) {
             }
             openDetailFor(q.word, isHistory = false)
         } else {
+            playAnswerSfx(correct = false)
             wrongIndices = wrongIndices + i
             repo.updateProgress(level, q.word.id) { p ->
                 p.copy(status = WordStatus.UNKNOWN, wrongCount = p.wrongCount + 1)
             }
+        }
+    }
+
+    /** Correct: Mixkit sci-fi click (raw); wrong: short system NACK. */
+    private fun playAnswerSfx(correct: Boolean) {
+        if (correct) {
+            runCatching {
+                sfxPlayer?.release()
+                sfxPlayer = MediaPlayer.create(getApplication(), R.raw.sfx_correct)?.also { mp ->
+                    mp.setVolume(0.1f, 0.1f)
+                    mp.setOnCompletionListener {
+                        runCatching { it.release() }
+                        if (sfxPlayer === it) sfxPlayer = null
+                    }
+                    mp.start()
+                }
+            }
+            return
+        }
+        runCatching {
+            val durationMs = 180
+            val tg = ToneGenerator(AudioManager.STREAM_MUSIC, 70)
+            tg.startTone(ToneGenerator.TONE_PROP_NACK, durationMs)
+            mainHandler.postDelayed({ runCatching { tg.release() } }, (durationMs + 80).toLong())
         }
     }
 
@@ -239,7 +293,9 @@ class QuizViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     override fun onCleared() {
+        mainHandler.removeCallbacksAndMessages(null)
         player?.release()
+        sfxPlayer?.release()
         super.onCleared()
     }
 }

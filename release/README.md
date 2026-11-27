@@ -4,6 +4,6 @@
 
 **请勿把大型 `.apk` / `.deword` 提交进 git**（已 gitignore）。正式分发在 GitHub：
 
-→ [Releases · Beta1.0](https://github.com/dasheng1995/NochMal/releases/tag/Beta1.0)
+→ [Releases · 1.1](https://github.com/dasheng1995/NochMal/releases/tag/1.1)
 
-本地构建后可放到 `Beta1.0/` 再执行 `gh release upload`。
+本地构建后可放到 `1.1/` 再执行 `gh release upload`。

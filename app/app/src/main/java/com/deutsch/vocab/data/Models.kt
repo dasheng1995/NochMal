@@ -17,6 +17,8 @@ data class Word(
     val pos: String,
     val defEn: String,
     val defZh: String,
+    /** Full Chinese senses from Dehelper (detail). Falls back to defZh when blank. */
+    val defZhFull: String = "",
     val exampleDe: String,
     val exampleEn: String,
     val exampleZh: String,
@@ -27,21 +29,40 @@ data class Word(
     private fun looksChinese(s: String): Boolean =
         s.any { it.code in 0x4E00..0x9FFF }
 
+    private fun splitSenses(zh: String): List<String> =
+        zh.split('；', ';')
+            .map { it.trim() }
+            .filter { it.isNotBlank() }
+
+    /** Quiz Chinese: at most 2 senses. */
     private val zhLine: String
         get() {
             val zh = defZh.trim()
-            val en = defEn.trim()
-            return when {
+            val raw = when {
                 looksChinese(zh) -> zh
-                looksChinese(en) -> en
-                else -> zh.ifBlank { en }
+                looksChinese(defEn.trim()) -> defEn.trim()
+                else -> zh.ifBlank { defEn.trim() }
             }
+            if (!looksChinese(raw)) return raw
+            return splitSenses(raw).take(2).joinToString("；").ifBlank { raw }
         }
 
     private val enLine: String
         get() {
             val en = defEn.trim()
             return if (looksChinese(en)) "" else en
+        }
+
+    /** Detail Chinese: all Dehelper senses when present. */
+    private val zhDetailLine: String
+        get() {
+            val full = defZhFull.trim()
+            val zh = defZh.trim()
+            return when {
+                looksChinese(full) -> full
+                looksChinese(zh) -> zh
+                else -> zhLine
+            }
         }
 
     /** Quiz options: hide der/die/das so gender does not leak the answer. */
@@ -51,7 +72,7 @@ data class Word(
             else -> pos.trim()
         }
 
-    /** Each option: Chinese + English on two lines. */
+    /** Each option: Chinese (≤2 senses) + English on two lines. */
     val optionLabel: String
         get() {
             val zh = zhLine
@@ -65,16 +86,22 @@ data class Word(
             return if (tag.isBlank()) body else "$tag. $body"
         }
 
+    /** Detail page: POS + Chinese (full Dehelper) + English gloss. */
     val detailDefLine: String
         get() {
-            val zh = zhLine
+            val zh = zhDetailLine
             val en = enLine
             val body = when {
                 zh.isNotBlank() && en.isNotBlank() && zh != en -> "$zh；$en"
                 zh.isNotBlank() -> zh
                 else -> en
             }
-            return if (pos.isBlank()) body else "$pos. $body"
+            val tag = pos.trim()
+            return when {
+                tag.isBlank() -> body
+                body.isBlank() -> tag
+                else -> "$tag. $body"
+            }
         }
 
     val exampleZhDisplay: String
@@ -141,6 +168,7 @@ fun parseWord(obj: JSONObject): Word {
         pos = obj.optString("pos"),
         defEn = obj.optString("def_en"),
         defZh = obj.optString("def_zh"),
+        defZhFull = obj.optString("def_zh_full"),
         exampleDe = obj.optString("example_de"),
         exampleEn = obj.optString("example_en"),
         exampleZh = obj.optString("example_zh"),
